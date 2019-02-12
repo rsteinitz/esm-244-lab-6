@@ -1,0 +1,312 @@
+---
+title: "ESM 244 lab 6"
+author: "Ronnie Bailey-Steinitz"
+date: "2/14/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Lab 6 - Spatial Data
+Goals: 
+
+- Read in spatial data (shapefiles)
+- Simplify polygons (st_simplify)
+- Add and transform projection (st_transform and st_crs)
+- Create several finalized-ish maps in R
+- Join spatial data (st_join)
+- Find spatial intersections (st_intersect)
+- Interactive plots with tmap
+- Updating color schemes, base layers, etc.
+- Plotting spatial lines
+- Creating sf data from lat/lon coordinates
+
+Awesome resource: 
+*Geocomputation in R* by Robin Lovelace, available online: 
+<https://geocompr.robinlovelace.net/>
+
+```{r}
+library(tidyverse)
+library(sf)
+library(tmap)
+library(leaflet)
+library(ggrepel)
+library(ggspatial)
+library(RColorBrewer)
+library(raster)
+
+#preventing conflict in commands between packages
+select <- dplyr::select
+filter <- dplyr::filter
+```
+
+###Useful information on file types (from gisgeography.com):
+
+- **.shp** is a mandatory Esri file that gives features their geometry. Every shapefile has its own .shp file that represent spatial vector data. For example, it could be points, lines and polygons in a map.
+
+- **.shx** are mandatory Esri and AutoCAD shape index position. This type of file is used to search forward and backwards.
+
+- **.dbf** is a standard database file used to store attribute data and object IDs. A .dbf file is mandatory for shape files. You can open .DBF files in Microsoft Access or Excel.
+
+- **.prj** is an optional file that contains the metadata associated with the shapefiles coordinate and projection system. If this file does not exist, you will get the error “unknown coordinate system”. If you want to fix this error, you have to use the “define projection” tool which generates .prj files.
+
+- **.xml** file types contains the metadata associated with the shapefile. If you delete this file, you essentially delete your metadata. You can open and edit this optional file type (.xml) in any text editor.
+
+- **.sbn** is an optional spatial index file that optimizes spatial queries. This file type is saved together with a .sbx file. These two files make up a shape index to speed up spatial queries.
+
+- **.sbx** are similar to .sbn files in which they speed up loading times. It works with .sbn files to optimize spatial queries. We tested .sbn and .sbx extensions and found that there were faster load times when these files existed. It was 6 seconds faster (27.3 sec versus 33.3 sec) compared with/without .sbn and .sbx files.
+
+- **.cpg** are optional plain text files that describes the encoding applied to create the shapefile. If your shapefile doesn’t have a cpg file, then it has the system default encoding. 
+
+###Mapping Examples
+
+####Example 1: Dammed California
+
+Data: California Jurisdictional Dams
+
+Accessed from: <https://hub.arcgis.com/datasets/98a09bec89c84681ae1701a2eb62f599_0/data?geometry=-150.074%2C31.096%2C-87.54%2C43.298&page=10>
+
+"This dataset is a feature class identifying all dams currently under the jurisdiction of the Division of Safety of Dams (DSOD). The dataset is extracted from DSOD internal records and contains basic information about the dam including the type of construction, basic dimensions such as height, length, and maximum storage capacity; abbreviated owner information to identify the entity legally responsible for the dam; an assessment of the downstream hazard associated with the dam; an assessment of the current condition of the dam; and indication as to whether the dam is operating at a restricted storage level. Several dams span rivers that define county boundaries, so DSOD references the right abutment of the dam to identify the location of the structure and to associate it with a singular administrative subdivision of California."
+
+Data: California eco-regions (EPA)
+
+Accessed from: <https://www.epa.gov/eco-research/ecoregion-download-files-state-region-9>
+
+a. Read in the California ecoregions data (layer "ca_eco"), select only the attribute for eco-region (US_L3NAME), rename that to "Region", simplify the polygons (for time) using st_simplify, and set the CRS:
+
+
+###Example 1. Dams in CA
+```{r}
+#has point location of dams, and other attributes - name, height, ownership, hazars...
+ca_eco <- read_sf(dsn = ".", layer = "ca_eco") %>% # Get data! getting simple features information; "." means get from current working directory; then tell it that the layers we want to bring in all start with "ca_eco", not other, really heavy layers
+  dplyr::select(US_L3NAME) %>% # Only select column with eco-regions
+  rename(Region = US_L3NAME) %>% # Rename that column to "Region"
+  st_simplify(dTolerance = 10) %>% # Simplify polygons (for time) - the higher tolerance, the higher resolution
+  st_transform(crs = 4326) # Change CRS to 4326
+
+st_crs(ca_eco) #Check projection using st_crs
+
+```
+
+
+b. Read in the California Counties shapefile data, and set CRS:
+```{r}
+
+ca_counties <- read_sf(dsn = ".", layer = "california_county_shape_file") # Read data
+st_crs(ca_counties) # we get N/A - we don't have a CRS set up yet. So make one:
+st_crs(ca_counties) = 4326 # Set CRS
+st_crs(ca_counties) #now we see it has CRS data
+```
+
+
+c. Dams in CA
+```{r}
+
+ca_dams <- read_sf(".", layer = "California_Jurisdictional_Dams") %>% 
+  rename(Condition = Condition_) #there was a column with an underscore at the end- I changed the column name/header
+
+ca_dams$Condition <- fct_relevel(ca_dams$Condition, "Fair", "Satisfactory", "Unsatisfactory", "Poor") #rearrange by condition
+#***default is alphabetical***, so tell it to give it a different order
+levels(ca_dams$Condition)
+```
+
+2.0 Maps!
+```{r}
+plot(ca_eco)
+plot(ca_counties) #autoplots by all indicators
+
+```
+
+3.0 Make a map with ggplot!
+```{r}
+
+#make a 9-level color brower pallete, and set to 13-levels
+#by number of regions
+color_count <- 13
+#making my own palette based on colorbrewer pallete
+my_colors <- colorRampPalette(brewer.pal(10, "Set2"))(color_count) #instead of "10", you can just say "3" and it'll pick the FIRST 3 colors in the  palette and redistribute them by shades
+ggplot(ca_eco) + #baselayer of ecoregion
+  geom_sf(aes(fill = Region),
+          color = "NA", #color of lines - remove
+          show.legend =  FALSE) +  #create our map- spatial information
+  scale_fill_manual(values = my_colors) +
+  geom_sf(data = ca_counties,
+          fill = "NA", 
+          color = "gray30", 
+          size = 0.1) +  #adding another polygon to the map
+  geom_point(data = ca_dams,
+             aes(x = Longitude, y = Latitude),
+             size = 1, color = "gray10", alpha = 0.5) +
+  theme_minimal() 
+  coord_sf(datum = NA) #this makes the x and y axes with the coordinate disappear
+
+```
+
+
+###Example 2. Dams in the Sierra Nevada eco-region
+```{r}
+sn <- ca_eco %>% 
+  filter(Region == "Sierra Nevada") %>%  #all ca_eco data, only pulling out geometry of SN
+  st_join(ca_dams)
+
+ggplot(sn) +
+  geom_sf(data = ca_counties, fill = "wheat3", color = "NA") + #created a map of CA with all county polygons
+  geom_sf(fill = "lemonchiffon4", color = "NA") + #line color = NA
+  geom_point(aes(x = Longitude, y = Latitude), size = 0.5, color = "red4")
+  
+```
+
+###Example 3. Find intersections between polygons: 
+```{r}
+sb <- ca_counties %>% 
+  filter(NAME == "Santa Barbara")
+#only SB county polygons (including islands)
+
+eco_clip <- st_intersection(ca_eco, sb) #clip ca_eco polygon by the bounds of SB polygons
+
+plot(eco_clip)
+
+ggplot(eco_clip) +
+  geom_sf(data = ca_counties, 
+          fill = "grey90", 
+          color = "gray80", 
+          size = 0.2) +
+  geom_sf(aes(fill = Region), color = "NA") + #eco_clip data is the go to, no need to repeat
+  scale_fill_manual(values = c("darkolivegreen2", "darkolivegreen", "gold")) +
+  coord_sf(xlim = c(-121, -119), ylim = c(33.5, 35.5)) + #set bounding box size by lat, lon
+  geom_point(aes(x = -119.6982, y = 34.4208), size = 2) + #manually add point to downtown SB
+  geom_text(x = -119.6982, y = 34.35, label = "Santa Barbara") +
+  theme_minimal() +
+  theme(legend.position = c(0.5,0.15)) +
+  labs(x = "", y = "", title = "Santa Barbara County Eco-Regions")
+
+
+
+```
+
+###Example 4. Intro to interactive plots with tmap
+```{r}
+map_sb_eco <- tm_shape(eco_clip) +
+  tm_fill("Region", palette = "RdPu", alpha = 0.5) +
+  tm_shape(ca_counties) +
+  tm_borders()
+  #tm_fill() to fill polygons with color
+
+tmap_mode("view") #sets tmap to interactive viewing
+map_sb_eco
+#WHAAAAAAAAT!!!!
+
+
+#leaflet has all kinds of basemaps
+leaflet::providers
+#do this to view providers of maps
+
+tm_basemap("CartoDB.DarkMatter") +
+  tm_shape(eco_clip) +
+  tm_borders(col = "white")
+#now no options for basemaps
+
+```
+
+
+
+###Example 5. Fault Lines
+Fault line data from California Dept. of Conservation:  <https://maps.conservation.ca.gov/geology/#datalist>
+Separate fault line types syncline/anticline, certain/concealed, direction columns using tidyr::separate(). 
+```{r}
+fault_lines <- read_sf(".", layer = "GMC_str_arc") %>% 
+  st_transform(crs = 4326) %>% #use if there is an existing projection; otherwise st_crs() to set it. If the file has a ".prj", it has a projection
+  separate(LTYPE, into = c("syn_ant", "certainty", "direction"), sep = ",") #use the comma within the string to separate the words; will populate some with NAs if there were less than 3 arguments within original LTYPE
+
+plot(fault_lines) #not concerning at all...
+
+ggplot() +
+  geom_sf(data = ca_counties, fill = "black", color = "NA") +
+  geom_sf(data = fault_lines, aes(color = syn_ant)) +
+  theme_void()
+
+# only want to look at faultlines in SB county
+sb_faults <- fault_lines %>% 
+  st_intersection(sb) #find faultlines only with sb
+
+ggplot() +
+  geom_sf(data = sb) +
+  geom_sf(data = sb_faults, aes(color = syn_ant))
+
+tm_basemap("CartoDB.DarkMatter") +
+  tm_shape(sb) +
+  tm_borders(col = "gray50", lwd = 2) +
+  tm_shape(sb_faults) +
+  tm_lines(col = "syn_ant", palette = c("orange", "purple"), lwd = 2) #you give it the column name in quotations, not within an aes
+
+
+
+```
+
+
+
+#Example 6. Faceted Maps
+```{r}
+ggplot() + 
+  geom_sf(data = ca_counties, fill = "black", color = "NA") +
+  geom_sf(data = fault_lines, aes(color = syn_ant)) +
+  facet_wrap(~syn_ant)
+
+tm_basemap("CartoDB.DarkMatter") +
+  tm_shape(sb) +
+  tm_borders(col = "gray50", lwd = 2) +
+  tm_shape(sb_faults) +
+  tm_lines(col = "syn_ant", palette = c("orange","purple"), lwd = 2) +
+  tm_facets(by = "syn_ant")
+
+```
+
+
+
+###Example 7. Making Spatial Points
+```{r}
+ca_sites <- read_csv("cadfw_sensitive_sites.csv")
+
+sites_sf <- st_as_sf(ca_sites, coords = c("LONDD", "LATDD"), crs = 4326) #now R knows this is spatial data (otherwise those are just variables and values)
+#it took those coordinates and made them sticky geometry!!! 
+
+ggplot() +
+  geom_sf(data = ca_counties, fill = "gray40") +
+  geom_sf(data = sites_sf, aes(color = PRI_CODE), size = 0.5)   #would have used geom_point for NON-sticky geom data. but now is sticky geometry
+
+```
+
+
+### Example 8. Choropleth of CA counties by NUMBER of dams in each
+```{r}
+#Find counts of dams per county:
+intersection <- st_intersection(x = ca_dams, y = ca_counties) 
+
+dams_per_county <- intersection %>% 
+  group_by(NAME) %>% 
+  tally() #will count per name of county
+
+# Check it out: 
+# View(dams_per_county)
+
+# Then merge to the ca_counties data: 
+ca_tot <- ca_counties %>% 
+  st_join(dams_per_county) %>% 
+  dplyr::select(NAME.x, n) %>%
+  rename(name = NAME.x)
+
+# Reassign NA values to zero:
+ca_tot$n[is.na(ca_tot$n)] <- 0 #because if there is county without dams, the county itself wont show up. So by assigning 0, keep the county there
+
+#plot
+ggplot() +
+  geom_sf(data =ca_tot, aes(fill = n), size = 0.2) +
+  theme_minimal() +
+  scale_fill_continuous(low = "yellow", high = "red")
+```
+
+
+
+
